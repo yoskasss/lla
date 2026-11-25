@@ -25,11 +25,616 @@ html[data-tema="koyu"] pre { background: #1e1e1e; color: #d4d4d4; padding: 0.6em
 html[data-tema="koyu"] hr { border-color: #444; background: #444; }
 html[data-tema="koyu"] button, html[data-tema="koyu"] select { background: #2a2a2a; color: #e0e0e0; border: 1px solid #666; }
 html[data-tema="koyu"] summary { color: #e0e0e0; }
+html[data-tema="koyu"] textarea, html[data-tema="koyu"] input[type="text"] { background: #1e1e1e; color: #e0e0e0; border: 1px solid #666; }
+html[data-tema="koyu"] mark { background: #7a6a00; color: #fff; }
+html[data-tema="koyu"] code { color: #e0e0e0; }
+#menu { padding-right: 8.5em; }
+mark { background: #ffe58f; color: #000; }
+pre { overflow-x: auto; }
+.kod-ara { margin: 0.6em 0 0 0; }
+.kod-kutu pre { margin-top: 0.2em; }
+pre.hl .k { color: #0033b3; font-weight: bold; }
+pre.hl .s { color: #067d17; }
+pre.hl .c { color: #6a737d; font-style: italic; }
+pre.hl .n { color: #a35200; }
+pre.hl .r { color: #871094; }
+pre.hl .i { color: #0b6e99; font-weight: bold; }
+pre.hl .p { color: #9c2f00; }
+pre.hl .e { color: #8a6d00; font-weight: bold; }
+html[data-tema="koyu"] pre.hl .k { color: #6cb6ff; }
+html[data-tema="koyu"] pre.hl .s { color: #8bd88b; }
+html[data-tema="koyu"] pre.hl .c { color: #8b949e; }
+html[data-tema="koyu"] pre.hl .n { color: #ffb86c; }
+html[data-tema="koyu"] pre.hl .r { color: #d2a8ff; }
+html[data-tema="koyu"] pre.hl .i { color: #79c0ff; }
+html[data-tema="koyu"] pre.hl .p { color: #ff9e7a; }
+html[data-tema="koyu"] pre.hl .e { color: #e3c76b; }
 </style>
 </head>
 <body bgcolor="#ffffff" text="#000000" link="#0000ee" vlink="#551a8b">
 <button id="tema-btn" type="button"></button>
 <div id="app"></div>
+
+<script>
+/* ===================== CANLI LABORATUVAR: x86-64 SİMÜLATÖRÜ ===================== */
+/* Ayrı bir script bloğudur: tarayıcı BigInt desteklemiyorsa yalnızca bu blok devre dışı kalır. */
+(function () {
+  if (typeof BigInt !== "function") return;
+
+  var M64 = (1n << 64n) - 1n;
+  var BASE = 0x401000n, STEP = 4n;
+  var STACK0 = 0x7fffffffe000n;
+  var MAXADIM = 20000;
+
+  /* ---------- Kayıtçılar ---------- */
+  var REGS = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"];
+  var RMAP = {};
+  (function () {
+    var lg = { rax: ["eax", "ax", "al"], rbx: ["ebx", "bx", "bl"], rcx: ["ecx", "cx", "cl"], rdx: ["edx", "dx", "dl"],
+               rsi: ["esi", "si", "sil"], rdi: ["edi", "di", "dil"], rbp: ["ebp", "bp", "bpl"], rsp: ["esp", "sp", "spl"] };
+    REGS.forEach(function (r, i) {
+      RMAP[r] = { i: i, bits: 64 };
+      if (lg[r]) {
+        RMAP[lg[r][0]] = { i: i, bits: 32 }; RMAP[lg[r][1]] = { i: i, bits: 16 }; RMAP[lg[r][2]] = { i: i, bits: 8 };
+      } else {
+        RMAP[r + "d"] = { i: i, bits: 32 }; RMAP[r + "w"] = { i: i, bits: 16 }; RMAP[r + "b"] = { i: i, bits: 8 };
+      }
+    });
+  })();
+
+  function mask(bits) { return (1n << BigInt(bits)) - 1n; }
+  function sgn(v, bits) { return Number((v >> BigInt(bits - 1)) & 1n); }
+  function toSigned(v, bits) { return BigInt.asIntN(bits, v); }
+  function hex(v, w) { var s = v.toString(16); while (s.length < w) s = "0" + s; return "0x" + s; }
+
+  /* ---------- Komut tablosu: [en az, en çok işlenen] ---------- */
+  var SPEC = {
+    mov: [2, 2], movzx: [2, 2], movsx: [2, 2], movsxd: [2, 2], lea: [2, 2],
+    add: [2, 2], sub: [2, 2], and: [2, 2], or: [2, 2], xor: [2, 2], cmp: [2, 2], test: [2, 2],
+    inc: [1, 1], dec: [1, 1], neg: [1, 1], not: [1, 1],
+    shl: [2, 2], sal: [2, 2], shr: [2, 2], sar: [2, 2], imul: [2, 3],
+    push: [1, 1], pop: [1, 1], xchg: [2, 2],
+    jmp: [1, 1], je: [1, 1], jz: [1, 1], jne: [1, 1], jnz: [1, 1], jg: [1, 1], jge: [1, 1], jl: [1, 1], jle: [1, 1],
+    ja: [1, 1], jae: [1, 1], jb: [1, 1], jbe: [1, 1], js: [1, 1], jns: [1, 1], jo: [1, 1], jno: [1, 1], jc: [1, 1], jnc: [1, 1],
+    call: [1, 1], ret: [0, 0], leave: [0, 0], nop: [0, 0], syscall: [0, 0], hlt: [0, 0]
+  };
+  var JUMPS = { jmp: 1, je: 1, jz: 1, jne: 1, jnz: 1, jg: 1, jge: 1, jl: 1, jle: 1, ja: 1, jae: 1, jb: 1, jbe: 1, js: 1, jns: 1, jo: 1, jno: 1, jc: 1, jnc: 1, call: 1 };
+  var KOSUL_METNI = {
+    je: "ZF=1 (eşit / sonuç sıfır)", jz: "ZF=1 (eşit / sonuç sıfır)", jne: "ZF=0 (eşit değil)", jnz: "ZF=0 (eşit değil)",
+    jg: "ZF=0 ve SF=OF (işaretli büyük)", jge: "SF=OF (işaretli büyük veya eşit)", jl: "SF≠OF (işaretli küçük)", jle: "ZF=1 veya SF≠OF (işaretli küçük veya eşit)",
+    ja: "CF=0 ve ZF=0 (işaretsiz büyük)", jae: "CF=0 (işaretsiz büyük veya eşit)", jb: "CF=1 (işaretsiz küçük)", jbe: "CF=1 veya ZF=1 (işaretsiz küçük veya eşit)",
+    jc: "CF=1", jnc: "CF=0", js: "SF=1 (sonuç negatif)", jns: "SF=0", jo: "OF=1 (işaretli taşma)", jno: "OF=0"
+  };
+
+  function kosul(op, f) {
+    switch (op) {
+      case "je": case "jz": return f.ZF === 1;
+      case "jne": case "jnz": return f.ZF === 0;
+      case "jg": return f.ZF === 0 && f.SF === f.OF;
+      case "jge": return f.SF === f.OF;
+      case "jl": return f.SF !== f.OF;
+      case "jle": return f.ZF === 1 || f.SF !== f.OF;
+      case "ja": return f.CF === 0 && f.ZF === 0;
+      case "jae": case "jnc": return f.CF === 0;
+      case "jb": case "jc": return f.CF === 1;
+      case "jbe": return f.CF === 1 || f.ZF === 1;
+      case "js": return f.SF === 1;
+      case "jns": return f.SF === 0;
+      case "jo": return f.OF === 1;
+      case "jno": return f.OF === 0;
+    }
+    return true;
+  }
+
+  /* ---------- Ayrıştırıcı ---------- */
+  function sayi(s) {
+    s = s.trim();
+    var m = /^([-+]?)(0x[0-9a-fA-F]+|\d+)$/.exec(s);
+    if (m) { var v = BigInt(m[2]); return m[1] === "-" ? -v : v; }
+    m = /^'(.)'$/.exec(s);
+    if (m) return BigInt(m[1].charCodeAt(0));
+    return null;
+  }
+
+  function opAyir(s) {
+    s = s.trim();
+    var low = s.toLowerCase();
+    if (RMAP[low]) return { k: "reg", i: RMAP[low].i, bits: RMAP[low].bits, t: low };
+    var m = /^(?:(byte|word|dword|qword)\s*(?:ptr)?\s*)?\[(.+)\]$/i.exec(s);
+    if (m) {
+      var size = m[1] ? { byte: 8, word: 16, dword: 32, qword: 64 }[m[1].toLowerCase()] : null;
+      var e = m[2].replace(/\s+/g, "").replace(/-/g, "+-");
+      var base = null, idx = null, scale = 1, disp = 0n;
+      e.split("+").forEach(function (p) {
+        if (!p) return;
+        var n = sayi(p);
+        if (n !== null) { disp += n; return; }
+        var mm = /^([a-z0-9]+)\*(\d+)$/i.exec(p), mm2 = /^(\d+)\*([a-z0-9]+)$/i.exec(p);
+        var r, sc = 1;
+        if (mm) { r = mm[1].toLowerCase(); sc = parseInt(mm[2], 10); }
+        else if (mm2) { r = mm2[2].toLowerCase(); sc = parseInt(mm2[1], 10); }
+        else r = p.toLowerCase();
+        if (!RMAP[r] || RMAP[r].bits !== 64) throw new Error("adres ifadesinde 64 bitlik kayıtçı bekleniyordu: " + p);
+        if (sc !== 1 && sc !== 2 && sc !== 4 && sc !== 8) throw new Error("ölçek 1, 2, 4 veya 8 olmalı");
+        if (sc === 1 && !mm && !mm2 && base === null) base = RMAP[r].i;
+        else if (idx === null) { idx = RMAP[r].i; scale = sc; }
+        else throw new Error("adres ifadesi çok karmaşık");
+      });
+      return { k: "mem", base: base, idx: idx, scale: scale, disp: disp, size: size, t: s };
+    }
+    var n = sayi(s);
+    if (n !== null) return { k: "imm", v: n, t: s };
+    if (/^[A-Za-z_.][\w.]*$/.test(s)) return { k: "lbl", name: s, t: s };
+    throw new Error("işlenen anlaşılamadı: " + s);
+  }
+
+  function derle(src) {
+    var prog = [], labels = {}, hatalar = [];
+    src.split("\n").forEach(function (raw, ln) {
+      var s = raw.replace(/(;|#|\/\/).*$/, "").trim();
+      var m;
+      while ((m = /^([A-Za-z_.][\w.]*):\s*(.*)$/.exec(s))) {
+        if (labels.hasOwnProperty(m[1])) hatalar.push("Satır " + (ln + 1) + ": '" + m[1] + "' etiketi iki kez tanımlanmış.");
+        labels[m[1]] = prog.length;
+        s = m[2].trim();
+      }
+      if (!s) return;
+      if (/^\./.test(s) || /^(global|section|bits|default|extern|segment)\b/i.test(s)) return;
+      var mm = /^(\S+)\s*(.*)$/.exec(s);
+      var op = mm[1].toLowerCase();
+      if (!SPEC.hasOwnProperty(op)) { hatalar.push("Satır " + (ln + 1) + ": desteklenmeyen komut '" + mm[1] + "'."); return; }
+      var args = [];
+      try { if (mm[2].trim()) args = mm[2].split(",").map(opAyir); }
+      catch (e) { hatalar.push("Satır " + (ln + 1) + ": " + e.message + "."); return; }
+      if (args.length < SPEC[op][0] || args.length > SPEC[op][1]) {
+        hatalar.push("Satır " + (ln + 1) + ": '" + op + "' için işlenen sayısı yanlış."); return;
+      }
+      prog.push({ op: op, args: args, text: s.replace(/\s+/g, " "), line: ln + 1 });
+    });
+    prog.forEach(function (ins) {
+      ins.args.forEach(function (a) {
+        if (a.k === "lbl" && !labels.hasOwnProperty(a.name)) hatalar.push("Satır " + ins.line + ": '" + a.name + "' etiketi bulunamadı.");
+      });
+      if (JUMPS[ins.op] && ins.args[0].k !== "lbl") hatalar.push("Satır " + ins.line + ": bu simülatörde '" + ins.op + "' yalnızca etiketle çalışır.");
+    });
+    return { prog: prog, labels: labels, hatalar: hatalar };
+  }
+
+  /* ---------- Makine ---------- */
+  function Makine(d) { this.prog = d.prog; this.labels = d.labels; this.reset(); }
+  var P = Makine.prototype;
+
+  P.reset = function () {
+    this.r = []; for (var i = 0; i < 16; i++) this.r.push(0n);
+    this.r[7] = STACK0 - 8n;
+    this.mem = new Map();
+    this.f = { ZF: 0, SF: 0, CF: 0, OF: 0 };
+    this.ip = 0; this.adim = 0; this.bitti = false; this.hata = false; this.mesaj = ""; this.cikti = "";
+    this.degisen = {};
+  };
+  P.rd = function (a, n) {
+    var v = 0n;
+    for (var k = 0; k < n; k++) v |= BigInt(this.mem.get((a + BigInt(k)) & M64) || 0) << BigInt(8 * k);
+    return v;
+  };
+  P.wr = function (a, n, v) {
+    for (var k = 0; k < n; k++) this.mem.set((a + BigInt(k)) & M64, Number((v >> BigInt(8 * k)) & 255n));
+  };
+  P.ea = function (o) {
+    var v = o.disp;
+    if (o.base !== null) v += this.r[o.base];
+    if (o.idx !== null) v += this.r[o.idx] * BigInt(o.scale);
+    return BigInt.asUintN(64, v);
+  };
+  P.get = function (o, bits) {
+    switch (o.k) {
+      case "reg": return this.r[o.i] & mask(o.bits);
+      case "imm": return BigInt.asUintN(bits, o.v);
+      case "lbl": return BigInt.asUintN(bits, BASE + BigInt(this.labels[o.name]) * STEP);
+      case "mem": return this.rd(this.ea(o), bits / 8);
+    }
+  };
+  P.put = function (o, bits, v) {
+    v = BigInt.asUintN(bits, v);
+    if (o.k === "reg") {
+      if (o.bits >= 32) this.r[o.i] = v;                       /* 32 bit yazma üst yarıyı sıfırlar */
+      else this.r[o.i] = (this.r[o.i] & (M64 ^ mask(o.bits))) | v;
+    } else if (o.k === "mem") this.wr(this.ea(o), bits / 8, v);
+    else throw new Error("bu işlenene yazılamaz");
+  };
+  P.genislik = function (ins) {
+    var a = ins.args[0], b = ins.args[1];
+    if (a.k === "mem" && b && b.k === "mem") throw new Error("iki işlenen de bellek olamaz");
+    if (a.k === "reg") return a.bits;
+    if (a.k === "mem") {
+      if (a.size) return a.size;
+      if (b && b.k === "reg") return b.bits;
+      throw new Error("bellek işleneninin boyutu belli değil; 'qword ptr [...]' gibi yazın");
+    }
+    throw new Error("hedef işlenen kayıtçı veya bellek olmalı");
+  };
+  P.push = function (v) { this.r[7] = (this.r[7] - 8n) & M64; this.wr(this.r[7], 8, v); };
+  P.pop = function () { var v = this.rd(this.r[7], 8); this.r[7] = (this.r[7] + 8n) & M64; return v; };
+
+  function alu(op, a, b, bits, f) {
+    var m = mask(bits), r;
+    switch (op) {
+      case "add": r = (a + b) & m; f.CF = (a + b) > m ? 1 : 0; f.OF = (sgn(a, bits) === sgn(b, bits) && sgn(r, bits) !== sgn(a, bits)) ? 1 : 0; break;
+      case "sub": case "cmp": r = (a - b) & m; f.CF = a < b ? 1 : 0; f.OF = (sgn(a, bits) !== sgn(b, bits) && sgn(r, bits) !== sgn(a, bits)) ? 1 : 0; break;
+      case "and": case "test": r = a & b; f.CF = 0; f.OF = 0; break;
+      case "or": r = a | b; f.CF = 0; f.OF = 0; break;
+      case "xor": r = a ^ b; f.CF = 0; f.OF = 0; break;
+    }
+    f.ZF = r === 0n ? 1 : 0; f.SF = sgn(r, bits);
+    return r;
+  }
+
+  P.yaz = function () { /* durum hatası vermesin diye yer tutucu */ };
+
+  P.adresGecerli = function (addr) {
+    if (addr < BASE) return -1;
+    var d = addr - BASE;
+    if (d % STEP !== 0n) return -1;
+    var idx = Number(d / STEP);
+    return idx <= this.prog.length ? idx : -1;
+  };
+
+  P.bitir = function (msg, hata) { this.bitti = true; this.hata = !!hata; this.mesaj = msg; };
+
+  P.step = function () {
+    if (this.bitti) return;
+    if (this.ip >= this.prog.length) { this.bitir("Program sona erdi: son komutun ötesine geçildi."); return; }
+    var ins = this.prog[this.ip], a = ins.args[0], b = ins.args[1], op = ins.op;
+    var onceki = this.r.slice();
+    var next = this.ip + 1;
+    var bits, x, y, r, c, f = this.f;
+    try {
+      switch (op) {
+        case "nop": break;
+        case "hlt": this.bitir("hlt komutu: işlemci durdu."); break;
+        case "mov": bits = this.genislik(ins); this.put(a, bits, this.get(b, bits)); break;
+        case "xchg": bits = this.genislik(ins); x = this.get(a, bits); y = this.get(b, bits); this.put(a, bits, y); this.put(b, bits, x); break;
+        case "lea":
+          if (a.k !== "reg" || b.k !== "mem") throw new Error("lea: reg, [bellek] biçiminde olmalı");
+          this.put(a, a.bits, this.ea(b)); break;
+        case "movzx": case "movsx": case "movsxd":
+          if (a.k !== "reg") throw new Error(op + ": hedef kayıtçı olmalı");
+          var sb = b.k === "reg" ? b.bits : b.size;
+          if (!sb) throw new Error("kaynak boyutu belli değil ('byte ptr [...]' gibi yazın)");
+          x = this.get(b, sb);
+          if (op !== "movzx") x = toSigned(x, sb);
+          this.put(a, a.bits, x); break;
+        case "add": case "sub": case "and": case "or": case "xor":
+          bits = this.genislik(ins);
+          r = alu(op, this.get(a, bits), this.get(b, bits), bits, f); this.put(a, bits, r); break;
+        case "cmp": case "test":
+          bits = this.genislik(ins); alu(op, this.get(a, bits), this.get(b, bits), bits, f); break;
+        case "inc": case "dec":
+          bits = this.genislik(ins); x = this.get(a, bits); c = f.CF;
+          r = alu(op === "inc" ? "add" : "sub", x, 1n, bits, f); f.CF = c; this.put(a, bits, r); break;
+        case "neg":
+          bits = this.genislik(ins); x = this.get(a, bits); r = (0n - x) & mask(bits);
+          f.CF = x !== 0n ? 1 : 0; f.OF = x === (1n << BigInt(bits - 1)) ? 1 : 0; f.ZF = r === 0n ? 1 : 0; f.SF = sgn(r, bits);
+          this.put(a, bits, r); break;
+        case "not":
+          bits = this.genislik(ins); this.put(a, bits, (~this.get(a, bits)) & mask(bits)); break;
+        case "shl": case "sal": case "shr": case "sar":
+          bits = this.genislik({ args: [a] });
+          x = this.get(a, bits);
+          var cnt = Number((b.k === "reg" ? this.get(b, b.bits) : BigInt.asUintN(8, b.v)) & (bits === 64 ? 63n : 31n));
+          if (cnt === 0) break;
+          var bc = BigInt(cnt);
+          if (op === "shl" || op === "sal") {
+            r = (x << bc) & mask(bits); f.CF = cnt <= bits ? Number((x >> BigInt(bits - cnt)) & 1n) : 0;
+            if (cnt === 1) f.OF = sgn(r, bits) ^ f.CF;
+          } else if (op === "shr") {
+            r = x >> bc; f.CF = Number((x >> (bc - 1n)) & 1n); if (cnt === 1) f.OF = sgn(x, bits);
+          } else {
+            r = BigInt.asUintN(bits, toSigned(x, bits) >> bc); f.CF = Number((toSigned(x, bits) >> (bc - 1n)) & 1n); if (cnt === 1) f.OF = 0;
+          }
+          f.ZF = r === 0n ? 1 : 0; f.SF = sgn(r, bits); this.put(a, bits, r); break;
+        case "imul":
+          if (a.k !== "reg") throw new Error("imul: hedef kayıtçı olmalı");
+          bits = a.bits;
+          var o1 = ins.args.length === 3 ? ins.args[1] : a, o2 = ins.args.length === 3 ? ins.args[2] : b;
+          x = toSigned(this.get(o1, bits), bits); y = toSigned(this.get(o2, bits), bits);
+          var tam = x * y; r = BigInt.asUintN(bits, tam);
+          f.CF = f.OF = (toSigned(r, bits) !== tam) ? 1 : 0;
+          this.put(a, bits, r); break;
+        case "push":
+          if (a.k === "reg" && a.bits !== 64) throw new Error("push: 64 bitlik kayıtçı kullanın");
+          if (a.k === "mem" && !a.size) a = { k: "mem", base: a.base, idx: a.idx, scale: a.scale, disp: a.disp, size: 64, t: a.t };
+          this.push(this.get(a, 64)); break;
+        case "pop":
+          if (a.k === "reg" && a.bits !== 64) throw new Error("pop: 64 bitlik kayıtçı kullanın");
+          this.put(a, 64, this.pop()); break;
+        case "leave": this.r[7] = this.r[6]; this.r[6] = this.pop(); break;
+        case "call": this.push(BASE + BigInt(this.ip + 1) * STEP); next = this.labels[a.name]; break;
+        case "ret":
+          x = this.pop();
+          if (x === 0n) { this.bitir("Program sona erdi: ana akıştan ret ile çıkıldı."); break; }
+          c = this.adresGecerli(x);
+          if (c < 0) {
+            this.bitir("ret: dönüş adresi " + hex(x, 1) + " geçerli bir komuta işaret etmiyor. Gerçek bir programda bu çökme (SIGSEGV) ya da kontrol akışının ele geçirilmesi demektir.", true);
+            break;
+          }
+          next = c; break;
+        case "syscall": this.sistemCagrisi(); next = this.ip + 1; this.r[1 + 1] = (BASE + BigInt(next) * STEP); /* rcx */ this.r[11] = 0x202n; break;
+        default:
+          if (JUMPS[op]) { if (op === "jmp" || kosul(op, f)) next = this.labels[a.name]; }
+          else throw new Error("komut uygulanamadı: " + op);
+      }
+    } catch (e) {
+      this.bitir("Hata (satır " + ins.line + "): " + e.message + ".", true);
+      return;
+    }
+    this.adim++;
+    this.degisen = {};
+    for (var i = 0; i < 16; i++) if (this.r[i] !== onceki[i]) this.degisen[i] = true;
+    if (!this.bitti) {
+      this.ip = next;
+      if (this.ip >= this.prog.length) this.bitir("Program sona erdi: komutlar bitti.");
+    }
+  };
+
+  P.sistemCagrisi = function () {
+    var no = this.r[0];
+    if (no === 1n) {
+      var n = Number(this.r[3]), buf = this.r[4], s = "";
+      if (n > 4096) throw new Error("write: en fazla 4096 bayt");
+      for (var i = 0; i < n; i++) s += String.fromCharCode(this.mem.get((buf + BigInt(i)) & M64) || 0);
+      this.cikti += s; this.r[0] = BigInt(n);
+    } else if (no === 60n || no === 231n) {
+      this.bitir("exit(" + this.r[5].toString() + ") çağrıldı: program normal sonlandı.");
+    } else throw new Error("syscall " + no.toString() + " bu simülatörde yok (yalnızca 1=write ve 60=exit)");
+  };
+
+  /* ---------- Türkçe açıklamalar ---------- */
+  function aciklama(ins, m) {
+    var A = ins.args[0] ? ins.args[0].t : "", B = ins.args[1] ? ins.args[1].t : "";
+    var f = m.f;
+    switch (ins.op) {
+      case "nop": return "Hiçbir şey yapmaz; yalnızca bir sonraki komuta geçer.";
+      case "hlt": return "İşlemciyi durdurur (kullanıcı kipinde normalde çökme sebebidir).";
+      case "mov": return B + " değeri " + A + " hedefine kopyalanır. Bayraklar değişmez.";
+      case "xchg": return A + " ile " + B + " birbiriyle yer değiştirir.";
+      case "lea": return "[...] içindeki adres hesaplanır ve " + A + " içine yazılır. Belleğe hiç erişilmez; bu yüzden hesap yapmak için de kullanılır.";
+      case "movzx": return B + " değeri sıfırla genişletilip (zero-extend) " + A + " içine yazılır.";
+      case "movsx": case "movsxd": return B + " değeri işaretle genişletilip (sign-extend) " + A + " içine yazılır.";
+      case "add": return A + " = " + A + " + " + B + ". Bayraklar (ZF, SF, CF, OF) güncellenir.";
+      case "sub": return A + " = " + A + " - " + B + ". Bayraklar güncellenir.";
+      case "and": return A + " = " + A + " & " + B + " (bit düzeyinde VE). CF ve OF sıfırlanır.";
+      case "or": return A + " = " + A + " | " + B + " (bit düzeyinde VEYA). CF ve OF sıfırlanır.";
+      case "xor":
+        return (ins.args[0].k === "reg" && ins.args[1].k === "reg" && A === B)
+          ? A + " kendisiyle XOR'lanır; sonuç her zaman 0'dır. Kayıtçıyı sıfırlamanın en yaygın ve en kısa yoludur."
+          : A + " = " + A + " ^ " + B + " (bit düzeyinde özel VEYA). CF ve OF sıfırlanır.";
+      case "cmp": return A + " - " + B + " hesaplanır ama sonuç atılır; yalnızca bayraklar ayarlanır. Ardından gelen koşullu atlama bu bayraklara bakar.";
+      case "test": return A + " & " + B + " hesaplanır, sonuç atılır, yalnızca bayraklar ayarlanır. 'test eax, eax' sıfır mı diye bakmanın yaygın yoludur.";
+      case "inc": return A + " bir artırılır. CF değişmez.";
+      case "dec": return A + " bir azaltılır. CF değişmez.";
+      case "neg": return A + " işaret değiştirir (iki tümleyen: 0 - " + A + ").";
+      case "not": return A + " içindeki tüm bitler tersine çevrilir (bir tümleyen).";
+      case "shl": case "sal": return A + " sola " + B + " bit kaydırılır; her adım 2 ile çarpmadır. Çıkan son bit CF'ye gider.";
+      case "shr": return A + " sağa " + B + " bit kaydırılır (soldan sıfır girer); işaretsiz bölme 2^n gibidir.";
+      case "sar": return A + " sağa " + B + " bit kaydırılır (soldan işaret biti girer); işaretli bölme 2^n gibidir.";
+      case "imul": return "İşaretli çarpma: sonuç " + A + " içine yazılır. Sonuç sığmazsa CF ve OF 1 olur.";
+      case "push": return "rsp 8 azaltılır, ardından " + A + " değeri yığının yeni tepesine yazılır.";
+      case "pop": return "Yığının tepesindeki değer " + A + " içine okunur, ardından rsp 8 artırılır.";
+      case "leave": return "mov rsp, rbp; pop rbp ile aynıdır: stack frame'i kapatır.";
+      case "call": return "Dönüş adresi yığına push edilir ve " + A + " etiketine atlanır.";
+      case "ret": return "Yığının tepesindeki dönüş adresi pop edilir ve oraya atlanır. Bu değer ezilmişse kontrol akışı başka yere gider.";
+      case "syscall": return "Çekirdeğe çağrı: rax numarayı, rdi/rsi/rdx argümanları taşır. rcx ve r11 bozulur. Bu simülatör 1 (write) ve 60 (exit) numaralarını bilir.";
+    }
+    if (JUMPS[ins.op]) {
+      if (ins.op === "jmp") return A + " etiketine koşulsuz atlar.";
+      var alinir = kosul(ins.op, f);
+      return "Koşul: " + KOSUL_METNI[ins.op] + ". Şu an bayraklar ZF=" + f.ZF + " SF=" + f.SF + " CF=" + f.CF + " OF=" + f.OF +
+             " olduğundan koşul " + (alinir ? "SAĞLANIYOR, " + A + " etiketine atlanacak." : "sağlanmıyor, bir sonraki komuta geçilecek.");
+    }
+    return "";
+  }
+
+  /* ---------- Örnek programlar ---------- */
+  var ORNEKLER = [
+    ["Toplama ve bayraklar", "mov rax, 5\nmov rbx, 7\nadd rax, rbx      ; rax = 12\nsub rax, 12       ; rax = 0 -> ZF=1\nsub rax, 1        ; -1 -> SF=1, CF=1"],
+    ["Döngü: 1'den 10'a toplam", "xor rax, rax       ; toplam = 0\nmov rcx, 10        ; sayaç\ntoplam:\n  add rax, rcx\n  dec rcx\n  jnz toplam       ; rcx 0 olana dek tekrarla\n; sonuç: rax = 55"],
+    ["Faktöriyel (5!)", "mov rcx, 5\nmov rax, 1\ndongu:\n  imul rax, rcx\n  dec rcx\n  jnz dongu\n; sonuç: rax = 120"],
+    ["Stack: push ve pop", "mov rax, 0x1111\nmov rbx, 0x2222\npush rax\npush rbx\npop rax           ; rax = 0x2222\npop rbx           ; rbx = 0x1111 (yer değiştirdiler)"],
+    ["Bellek erişimi ve lea", "sub rsp, 16\nmov qword ptr [rsp], 7\nmov qword ptr [rsp+8], 5\nmov rax, [rsp]\nadd rax, [rsp+8]       ; 12\nlea rbx, [rax+rax*4]   ; lea ile hesap: rbx = 5 * rax = 60\nlea rcx, [rax*8+3]     ; rcx = 8*rax + 3 = 99"],
+    ["Fonksiyon çağrısı (System V)", "mov rdi, 3          ; 1. argüman\nmov rsi, 4          ; 2. argüman\ncall topla\njmp bitti\ntopla:\n  lea rax, [rdi+rsi]  ; dönüş değeri rax'e\n  ret\nbitti:\n  nop"],
+    ["Taşma: işaretli ve işaretsiz", "mov eax, 0x7fffffff   ; en büyük işaretli 32 bit sayı\nadd eax, 1            ; OF=1, SF=1: işaretli taşma\nmov ebx, 0xffffffff\nadd ebx, 1            ; CF=1, ZF=1: işaretsiz taşma"],
+    ["Dönüş adresini ezmek (ret2win)", "call f\n  mov rdi, 1          ; normalde burası çalışır\n  jmp bitti\nf:\n  mov rax, gizli      ; gizli fonksiyonun adresi\n  mov [rsp], rax      ; dönüş adresi üzerine yazıldı!\n  ret\ngizli:\n  mov rdi, 1337       ; saldırganın istediği kod\nbitti:\n  nop"],
+    ["write sistem çağrısı", "sub rsp, 16\nmov dword ptr [rsp], 0x6c6c6548   ; \"Hell\" (little endian)\nmov word ptr [rsp+4], 0x216f        ; \"o!\"\nmov rax, 1          ; write\nmov rdi, 1          ; stdout\nmov rsi, rsp        ; tampon\nmov rdx, 6          ; uzunluk\nsyscall\nmov rax, 60         ; exit\nxor rdi, rdi\nsyscall"]
+  ];
+
+  /* ---------- Sayfa ---------- */
+  var sonKod = ORNEKLER[1][1];
+
+  function sayfa(app, el) {
+    var makine = null, derlenenKod = null;
+
+    app.appendChild(el("h2", { text: "Canlı laboratuvar: x86-64 simülatörü" }));
+    app.appendChild(el("p", { text: "Intel sözdiziminde assembly yazın, adım adım çalıştırın ve kayıtçıların, bayrakların ve yığının nasıl değiştiğini izleyin. Her adımda sıradaki komutun ne yaptığı yazılı olarak açıklanır." }));
+    app.appendChild(el("p", null, [el("small", { text:
+      "Desteklenen komutlar: mov, movzx, movsx, movsxd, lea, add, sub, and, or, xor, cmp, test, inc, dec, neg, not, shl, shr, sar, imul, push, pop, xchg, jmp, koşullu atlamalar (je, jne, jg, jge, jl, jle, ja, jae, jb, jbe, js, jns, jo, jno, jc, jnc), call, ret, leave, nop, hlt ve syscall (yalnızca write ve exit). " +
+      "Bu bir öğretim aracıdır, gerçek bir işlemci veya emülatör değildir: kayan nokta, bölme, SSE/AVX, segmentler ve gerçek dosya erişimi yoktur. Yığın başlangıç adresi 0x7fffffffe000'dır; komut adresleri 0x401000'den başlar ve 4'er bayt ilerler. Bellek işleneninin boyutu belli değilse 'qword ptr [rsp]' gibi yazın."
+    })]));
+
+    var sec = el("select");
+    ORNEKLER.forEach(function (o, i) { sec.appendChild(el("option", { value: String(i), text: o[0] })); });
+    var btnYukle = el("button", { type: "button", text: "Örneği yükle" });
+    app.appendChild(el("p", null, ["Örnek: ", sec, " ", btnYukle]));
+
+    var ta = el("textarea", { rows: "14", style: "width:100%;box-sizing:border-box;font-family:monospace", spellcheck: "false" });
+    ta.value = sonKod;
+    app.appendChild(ta);
+
+    var btnReset = el("button", { type: "button", text: "Derle / Sıfırla" });
+    var btnAdim = el("button", { type: "button", text: "Adım (1)" });
+    var btnOn = el("button", { type: "button", text: "10 adım" });
+    var btnCalistir = el("button", { type: "button", text: "Sonuna kadar çalıştır" });
+    app.appendChild(el("p", null, [btnReset, " ", btnAdim, " ", btnOn, " ", btnCalistir]));
+
+    var durum = el("div");
+    var kayitDiv = el("div");
+    var yigDiv = el("div");
+    var progDiv = el("div");
+    var ciktiDiv = el("div");
+    var bellekDiv = el("div");
+    app.appendChild(durum);
+    app.appendChild(el("h3", { text: "Kayıtçılar ve bayraklar" }));
+    app.appendChild(kayitDiv);
+    app.appendChild(el("h3", { text: "Yığın (rsp'den yukarı doğru)" }));
+    app.appendChild(yigDiv);
+    app.appendChild(el("h3", { text: "Program" }));
+    app.appendChild(progDiv);
+    app.appendChild(el("h3", { text: "Çıktı (write çağrısı)" }));
+    app.appendChild(ciktiDiv);
+
+    var adresIn = el("input", { type: "text", value: "0x7fffffffdff0", size: "18" });
+    var btnBak = el("button", { type: "button", text: "Göster" });
+    app.appendChild(el("h3", { text: "Bellek görüntüleyici" }));
+    app.appendChild(el("p", null, ["Adres: ", adresIn, " ", btnBak, " (16 bayt × 4 satır)"]));
+    app.appendChild(bellekDiv);
+
+    function temizle(n) { while (n.firstChild) n.removeChild(n.firstChild); }
+
+    function derleYenile() {
+      sonKod = ta.value;
+      var d = derle(ta.value);
+      derlenenKod = ta.value;
+      if (d.hatalar.length) {
+        makine = null;
+        ciz(d.hatalar);
+        return false;
+      }
+      if (!d.prog.length) { makine = null; ciz(["Program boş. Bir örnek yükleyin ya da komut yazın."]); return false; }
+      makine = new Makine(d);
+      ciz();
+      return true;
+    }
+
+    function hazir() {
+      if (!makine || derlenenKod !== ta.value) return derleYenile();
+      return true;
+    }
+
+    function ciz(hatalar) {
+      temizle(durum); temizle(kayitDiv); temizle(yigDiv); temizle(progDiv); temizle(ciktiDiv);
+      if (hatalar) {
+        var ul = el("ul");
+        hatalar.forEach(function (h) { ul.appendChild(el("li", { text: h })); });
+        durum.appendChild(el("p", null, [el("b", { text: "Derleme hatası:" })]));
+        durum.appendChild(ul);
+        return;
+      }
+      var m = makine;
+      /* Durum */
+      if (m.bitti) {
+        durum.appendChild(el("p", null, [el("b", { text: (m.hata ? "Durdu (hata): " : "Bitti: ") }), m.mesaj + " Toplam " + m.adim + " komut çalıştı."]));
+      } else {
+        var ins = m.prog[m.ip];
+        durum.appendChild(el("p", null, [
+          el("b", { text: "Sıradaki komut (satır " + ins.line + ", adres " + hex(BASE + BigInt(m.ip) * STEP, 1) + "): " }),
+          el("code", { text: ins.text })
+        ]));
+        durum.appendChild(el("p", null, [el("i", { text: aciklama(ins, m) })]));
+        durum.appendChild(el("p", null, [el("small", { text: "Çalışan komut sayısı: " + m.adim })]));
+      }
+      /* Kayıtçılar */
+      var t = el("table", { border: "1", cellpadding: "3", cellspacing: "0" });
+      t.appendChild(el("tr", null, [el("th", { text: "Kayıtçı" }), el("th", { text: "Onaltılık" }), el("th", { text: "İşaretli ondalık" }),
+                                    el("th", { text: "Kayıtçı" }), el("th", { text: "Onaltılık" }), el("th", { text: "İşaretli ondalık" })]));
+      for (var i = 0; i < 16; i += 2) {
+        var tr = el("tr");
+        [i, i + 1].forEach(function (k) {
+          var ch = m.degisen[k];
+          var hv = el("code", { text: hex(m.r[k], 16) });
+          tr.appendChild(el("td", null, [ch ? el("b", { text: REGS[k] + " *" }) : REGS[k]]));
+          tr.appendChild(el("td", null, [ch ? el("b", null, [hv]) : hv]));
+          tr.appendChild(el("td", { align: "right", text: toSigned(m.r[k], 64).toString() }));
+        });
+        t.appendChild(tr);
+      }
+      kayitDiv.appendChild(t);
+      kayitDiv.appendChild(el("p", null, [
+        el("b", { text: "Bayraklar: " }),
+        "ZF=" + m.f.ZF + "  SF=" + m.f.SF + "  CF=" + m.f.CF + "  OF=" + m.f.OF,
+        el("small", { text: "   (* son adımda değişen kayıtçı)" })
+      ]));
+      /* Yığın */
+      var ys = el("table", { border: "1", cellpadding: "3", cellspacing: "0" });
+      ys.appendChild(el("tr", null, [el("th", { text: "Adres" }), el("th", { text: "Değer (8 bayt)" }), el("th", { text: "" })]));
+      for (var j = 0; j < 8; j++) {
+        var ad = (m.r[7] + BigInt(j * 8)) & M64;
+        if (ad >= STACK0) break;
+        var notlar = [];
+        if (j === 0) notlar.push("◄ rsp");
+        if (ad === m.r[6]) notlar.push("◄ rbp");
+        ys.appendChild(el("tr", null, [el("td", null, [el("code", { text: hex(ad, 12) })]), el("td", null, [el("code", { text: hex(m.rd(ad, 8), 16) })]), el("td", { text: notlar.join(" ") })]));
+      }
+      yigDiv.appendChild(ys);
+      /* Program */
+      var pt = el("table", { border: "1", cellpadding: "3", cellspacing: "0" });
+      m.prog.forEach(function (ins2, k) {
+        var etiketler = [];
+        for (var nm in m.labels) if (m.labels[nm] === k) etiketler.push(nm + ":");
+        if (etiketler.length) pt.appendChild(el("tr", null, [el("td", { colspan: "3", text: etiketler.join(" ") })]));
+        var aktif = (!m.bitti && k === m.ip);
+        pt.appendChild(el("tr", null, [
+          el("td", { text: aktif ? "►" : "" }),
+          el("td", null, [el("code", { text: hex(BASE + BigInt(k) * STEP, 1) })]),
+          el("td", null, [aktif ? el("b", { text: ins2.text }) : el("code", { text: ins2.text })])
+        ]));
+      });
+      progDiv.appendChild(pt);
+      ciktiDiv.appendChild(el("pre", { text: m.cikti || "(henüz çıktı yok)" }));
+    }
+
+    function adimAt(n) {
+      if (!hazir()) return;
+      for (var i = 0; i < n && !makine.bitti; i++) makine.step();
+      ciz();
+    }
+
+    btnYukle.onclick = function () { ta.value = ORNEKLER[parseInt(sec.value, 10)][1]; derleYenile(); };
+    btnReset.onclick = function () { derleYenile(); };
+    btnAdim.onclick = function () { adimAt(1); };
+    btnOn.onclick = function () { adimAt(10); };
+    btnCalistir.onclick = function () {
+      if (!hazir()) return;
+      var n = 0;
+      while (!makine.bitti && n < MAXADIM) { makine.step(); n++; }
+      if (!makine.bitti) { makine.bitir("En fazla " + MAXADIM + " adım çalıştırıldı; sonsuz döngü olabilir.", true); }
+      ciz();
+    };
+    ta.oninput = function () { sonKod = ta.value; };
+    btnBak.onclick = function () {
+      temizle(bellekDiv);
+      var s = adresIn.value.trim(), a;
+      try { a = BigInt(s); } catch (e) { bellekDiv.appendChild(el("p", { text: "Geçerli bir adres yazın (örnek: 0x7fffffffdff0)." })); return; }
+      if (!hazir()) return;
+      a = BigInt.asUintN(64, a);
+      var lines = [];
+      for (var i = 0; i < 4; i++) {
+        var base = (a + BigInt(i * 16)) & M64, hx = [], asc = "";
+        for (var k = 0; k < 16; k++) {
+          var bv = makine.mem.get((base + BigInt(k)) & M64) || 0;
+          hx.push((bv < 16 ? "0" : "") + bv.toString(16));
+          asc += (bv >= 32 && bv < 127) ? String.fromCharCode(bv) : ".";
+        }
+        lines.push(hex(base, 12) + "  " + hx.join(" ") + "  " + asc);
+      }
+      bellekDiv.appendChild(el("pre", { text: lines.join("\n") }));
+    };
+
+    derleYenile();
+  }
+
+  window.LAB = { sayfa: sayfa, _test: { derle: derle, Makine: Makine } };
+})();
+</script>
 
 <script>
 /* ===================== DERS VERİSİ ===================== */
@@ -5378,6 +5983,18 @@ function anaSayfa() {
   app.appendChild(ul);
   app.appendChild(el("p", null, [el("a", { href: "#sozluk", text: "Sözlük" }), " sayfasında akademide geçen temel terimleri bulabilirsiniz."]));
 
+  app.appendChild(el("h3", { text: "Araçlar ve rehberler" }));
+  var arac = el("ul");
+  [
+    ["#yol", "Yol haritaları", "hedefinize göre seçilmiş kısa ders sıraları (97 ders gözünüzü korkutmasın)"],
+    ["#kopya", "Hızlı başvuru", "kayıtçılar, bayraklar, çağrı kuralları, syscall tablosu, GDB ve Ghidra kısayolları"],
+    ["#lab", "Canlı laboratuvar", "tarayıcıda çalışan x86-64 simülatörü: komutları adım adım çalıştırın"],
+    ["#ara", "Arama", "tüm derslerde, sözlükte ve kodlarda arama (üstteki kutu her sayfada vardır)"]
+  ].forEach(function (r) {
+    arac.appendChild(el("li", null, [el("a", { href: r[0], text: r[1] }), ": " + r[2] + "."]));
+  });
+  app.appendChild(arac);
+
   var tbl = el("table", { border: "1", cellpadding: "4", cellspacing: "0", width: "100%" });
   tbl.appendChild(el("tr", null, [
     el("th", { text: "No" }), el("th", { text: "Ders" }), el("th", { text: "Süre" })
@@ -5432,6 +6049,19 @@ function dersSayfa(n) {
   app.appendChild(el("h2", { text: "Ders " + n + ": " + d.baslik }));
   app.appendChild(el("p", null, [el("i", { text: ASAMALAR[d.asama - 1] + " | Süre: 60 dakika" })]));
   app.appendChild(el("p", null, [el("b", { text: "Amaç: " }), d.amac]));
+  app.appendChild(onKosulBlogu(n));
+  var yolAdlari = YOLLAR.filter(function (y) { return y.dersler && y.dersler.indexOf(n) !== -1; });
+  if (yolAdlari.length) {
+    var yp = el("p", null, [el("small", null, ["Yer aldığı yol haritaları: "])]);
+    yolAdlari.forEach(function (y, i) {
+      if (i) yp.firstChild.appendChild(document.createTextNode(", "));
+      yp.firstChild.appendChild(el("a", { href: "#yol-" + y.id, text: y.baslik }));
+    });
+    app.appendChild(yp);
+  }
+  if (n === 3 || (n >= 22 && n <= 27) || n === 29 || n === 62 || n === 71) {
+    app.appendChild(el("p", null, ["Deneyin: ", el("a", { href: "#lab", text: "canlı laboratuvarda" }), " bu konudaki komutları adım adım çalıştırıp kayıtçıların ve yığının değişimini izleyin."]));
+  }
   app.appendChild(el("hr"));
 
   /* Sesli anlatım */
@@ -5463,14 +6093,14 @@ function dersSayfa(n) {
   d.anlat.forEach(function (p) { app.appendChild(el("p", { text: p })); });
   if (d.kod) {
     app.appendChild(el("p", null, [el("b", { text: d.kodBaslik + ":" })]));
-    app.appendChild(el("pre", { text: d.kod }));
+    app.appendChild(kodBlogu(d.kod));
   }
   if (d.ek && d.ek.length) {
     app.appendChild(el("h4", { text: "Ek detaylar" }));
     d.ek.forEach(function (p) { app.appendChild(el("p", { text: p })); });
     if (d.ekKod) {
       app.appendChild(el("p", null, [el("b", { text: (d.ekKodBaslik || "Ek örnek") + ":" })]));
-      app.appendChild(el("pre", { text: d.ekKod }));
+      app.appendChild(kodBlogu(d.ekKod));
     }
   }
   app.appendChild(el("p", null, [el("i", { text: d.ozet })]));
@@ -5654,7 +6284,7 @@ function ctfSayfa(secim) {
   /* Çözüm (gizlenebilir) */
   app.appendChild(el("details", null, [
     el("summary", { text: "Çözümü Göster" }),
-    el("pre", { text: c.cozulme })
+    kodBlogu(c.cozulme)
   ]));
 
   /* Dosyalar / İndirme */
@@ -5671,15 +6301,615 @@ function ctfSayfa(secim) {
   ]));
 }
 
+/* ===================== YENİ ÖZELLİKLER ===================== */
+
+/* ---------- Kod renklendirme ve kopyalama ---------- */
+var HL = (function () {
+  var C_KW = "if else for while do switch case default break continue return goto sizeof typedef struct union enum static extern const volatile register inline auto restrict void char short int long float double signed unsigned _Bool class public private protected new delete template typename namespace using virtual nullptr this try catch throw".split(" ");
+  var C_TYPES = "size_t ssize_t uint8_t uint16_t uint32_t uint64_t int8_t int16_t int32_t int64_t intptr_t uintptr_t off_t pid_t FILE bool".split(" ");
+  var C_CONST = "NULL true false EOF stdin stdout stderr".split(" ");
+  var PY_KW = "def class import from as return if elif else for while in not and or is None True False with try except finally lambda pass break continue print raise yield".split(" ");
+  var INSTR = ("mov movzx movsx movsxd movabs movaps movups movdqa movdqu movss movsd movq movd lea add sub adc sbb mul imul div idiv inc dec neg not and or xor cmp test shl shr sar sal rol ror push pop call ret retn leave nop jmp je jne jz jnz jg jge jl jle ja jae jb jbe js jns jo jno jc jnc jp jnp jcxz jrcxz loop loope loopne cmove cmovne cmovg cmovl cmovge cmovle cmova cmovb sete setne setg setl seta setb setz setnz xchg cdq cdqe cqo cwde bswap int syscall sysenter hlt endbr64 rep repe repne movs movsb movsw movsq stos stosb stosq scas scasb cmps cmpsb lods lodsb lock cmpxchg xadd pause cpuid rdtsc ud2 pxor paddd psubd addss addsd subss subsd mulss mulsd divss divsd cvtsi2sd cvttsd2si ldr str stp ldp mov movk movz bl blr br b cbz cbnz cmp adrp adr paciasp autiasp bti svc").split(" ");
+  var REG_RE = /^(?:[re]?(?:ax|bx|cx|dx|si|di|bp|sp|ip)|[abcd][lh]|[sd]il?|[sb]pl?|r(?:[89]|1[0-5])[dwb]?|xmm\d+|ymm\d+|zmm\d+|[cdefgs]s|st\d?|rflags|eflags|[xw](?:[0-9]|[12][0-9]|30)|sp|lr|pc)$/i;
+
+  function kume(a) { var o = {}; a.forEach(function (x) { o[x] = 1; }); return o; }
+  var sC = kume(C_KW), sT = kume(C_TYPES), sK = kume(C_CONST), sP = kume(PY_KW), sI = kume(INSTR);
+
+  function tespit(kod) {
+    var satirlar = kod.split("\n"), asm = 0, c = 0, py = 0;
+    var asmRe = /^\s*(?:[\w.]+:\s*)?(?:[0-9a-f]{4,16}:?\s+(?:[0-9a-f]{2}\s+)*)?(mov|lea|push|pop|call|ret|jmp|je|jne|jz|jnz|add|sub|xor|cmp|test|nop|syscall|int|and|or|shl|shr|imul|leave|endbr64|ldr|str|bl|stp|ldp)\b/i;
+    satirlar.forEach(function (s) {
+      if (asmRe.test(s) && !/[;{}]\s*$/.test(s.replace(/;.*$/, "")) ) asm++;
+      if (/;\s*$|^\s*#\s*(include|define|if|ifdef|ifndef|endif|pragma)\b|[{}]\s*$|\b(int|char|void|struct|unsigned)\b/.test(s)) c++;
+      if (/^\s*(from\s+\w+\s+import|import\s+\w+|def\s+\w+\(|\w+\s*=\s*(process|remote|ELF)\()/.test(s) || /\bp64\(|\bp32\(/.test(s)) py++;
+    });
+    if (py >= 1 && py * 2 >= asm) return "py";
+    if (asm >= 2 && asm * 2 >= c) return "asm";
+    if (c >= 1) return "c";
+    return "kabuk";
+  }
+
+  var KURAL = {
+    c: /(\/\*[\s\S]*?\*\/|\/\/[^\n]*)|("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|(^[ \t]*#[ \t]*\w+[^\n]*)|(\b0x[0-9a-fA-F]+[uUlL]*\b|\b\d+(?:\.\d+)?[uUlLfF]*\b)|([A-Za-z_]\w*)/gm,
+    asm: /(;[^\n]*|#[^\n]*|\/\/[^\n]*)|("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|(^[ \t]*[\w.@]+:)|(\$?-?\b0x[0-9a-fA-F]+\b|\$?\b\d+\b)|([%.]?[A-Za-z_][\w.]*)/gm,
+    py: /(#[^\n]*)|("""[\s\S]*?"""|b?"(?:\\.|[^"\\\n])*"|b?'(?:\\.|[^'\\\n])*')|()(\b0x[0-9a-fA-F]+\b|\b\d+(?:\.\d+)?\b)|([A-Za-z_]\w*)/gm,
+    kabuk: /(^[ \t]*#[^\n]*)|("(?:\\.|[^"\\\n])*"|'[^'\n]*')|()(\b0x[0-9a-fA-F]+\b)|()/gm
+  };
+
+  function sinif(mod, g, tok, onceki) {
+    if (g === 1) return "c";
+    if (g === 2) return "s";
+    if (g === 3) return mod === "asm" ? "e" : "p";
+    if (g === 4) return "n";
+    if (g === 5) {
+      if (mod === "c") return sC[tok] ? "k" : (sT[tok] ? "k" : (sK[tok] ? "n" : null));
+      if (mod === "py") return sP[tok] ? "k" : null;
+      if (mod === "asm") {
+        var t = tok.replace(/^%/, "");
+        if (tok.charAt(0) === ".") return "p";
+        if (REG_RE.test(t)) return "r";
+        if (sI[t.toLowerCase()]) return "i";
+        if (/^(byte|word|dword|qword|ptr|offset|short|near|far)$/i.test(t)) return "k";
+        return null;
+      }
+    }
+    return null;
+  }
+
+  function parca(kod, mod) {
+    var frag = document.createDocumentFragment();
+    var re = new RegExp(KURAL[mod].source, "gm");
+    var son = 0, m;
+    while ((m = re.exec(kod)) !== null) {
+      if (m[0] === "") { re.lastIndex++; continue; }
+      if (m.index > son) frag.appendChild(document.createTextNode(kod.slice(son, m.index)));
+      var g = 0;
+      for (var i = 1; i < m.length; i++) if (m[i] !== undefined && m[i] !== "") { g = i; break; }
+      var cls = g ? sinif(mod, g, m[0]) : null;
+      if (cls) { var sp = document.createElement("span"); sp.className = cls; sp.textContent = m[0]; frag.appendChild(sp); }
+      else frag.appendChild(document.createTextNode(m[0]));
+      son = m.index + m[0].length;
+    }
+    if (son < kod.length) frag.appendChild(document.createTextNode(kod.slice(son)));
+    return frag;
+  }
+
+  return { tespit: tespit, parca: parca };
+})();
+
+function panoyaKopyala(metin, dugme) {
+  function bitti(ok) {
+    var eski = dugme.getAttribute("data-eski") || dugme.textContent;
+    dugme.setAttribute("data-eski", eski);
+    dugme.textContent = ok ? "Kopyalandı ✓" : "Kopyalanamadı";
+    setTimeout(function () { dugme.textContent = eski; }, 1500);
+  }
+  function yedek() {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = metin; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      var ok = document.execCommand("copy");
+      document.body.removeChild(ta); bitti(ok);
+    } catch (e) { bitti(false); }
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(metin).then(function () { bitti(true); }, yedek);
+  else yedek();
+}
+
+function kodBlogu(kod) {
+  var mod;
+  try { mod = HL.tespit(kod); } catch (e) { mod = "kabuk"; }
+  var pre = el("pre", { "class": "hl" });
+  try { pre.appendChild(HL.parca(kod, mod)); } catch (e) { pre.textContent = kod; }
+  var dugme = el("button", { type: "button", text: "Kopyala" });
+  dugme.onclick = function () { panoyaKopyala(kod, dugme); };
+  var etiket = { c: "C", asm: "Assembly", py: "Python", kabuk: "Metin / komut" }[mod];
+  return el("div", { "class": "kod-kutu" }, [
+    el("div", { "class": "kod-ara" }, [dugme, " ", el("small", { text: etiket })]),
+    pre
+  ]);
+}
+
+/* ---------- Ön koşullar ---------- */
+/* Anahtar: ders numarası, değer: önerilen ön bilgi dersleri */
+var ON_KOSUL = {
+  2: [1], 3: [1], 4: [1], 5: [1], 6: [1], 7: [1], 8: [1], 9: [8], 10: [1], 11: [1], 12: [8, 9], 13: [6], 14: [8],
+  15: [2, 3], 16: [3, 6], 17: [5], 18: [5], 19: [4, 5], 20: [8, 9], 21: [2, 15],
+  22: [3], 23: [22], 24: [22, 23], 25: [23], 26: [5, 23], 27: [23], 28: [18, 26], 29: [24], 30: [22, 24],
+  31: [9, 22], 32: [23, 26], 33: [24, 31], 34: [26, 33], 35: [31], 36: [28], 37: [31], 38: [26], 39: [8, 20],
+  40: [24], 41: [30], 42: [24],
+  43: [3, 4, 23], 44: [24, 43], 45: [44], 46: [44], 47: [8, 39], 48: [26, 44], 49: [7, 44], 50: [44, 47],
+  51: [44, 48], 52: [44, 48], 53: [44], 54: [44], 55: [49, 52], 56: [50], 57: [49], 58: [8, 43], 59: [8, 54],
+  60: [22, 23, 24], 61: [31, 60], 62: [3, 60], 63: [26, 44], 64: [8, 60], 65: [8, 44], 67: [44], 68: [21],
+  69: [60, 62], 70: [15, 16, 61], 71: [42, 61, 62], 72: [60, 65], 73: [12, 29], 74: [66], 75: [65, 66],
+  76: [60], 77: [68],
+  78: [3, 60], 79: [60], 80: [44, 60], 81: [65], 82: [44], 83: [44, 60], 84: [8, 66], 85: [44], 86: [12, 29],
+  87: [65, 81], 88: [86], 89: [31], 90: [44], 91: [44], 92: [91], 93: [38], 94: [84], 95: [63], 96: [69], 97: [60, 69]
+};
+
+function onKosulBlogu(n) {
+  var l = ON_KOSUL[n] || [];
+  var p = el("p", null, [el("b", { text: "Önerilen ön bilgi: " })]);
+  if (!l.length) { p.appendChild(document.createTextNode("Yok. Bu dersle doğrudan başlayabilirsiniz.")); return p; }
+  l.forEach(function (k, i) {
+    if (i) p.appendChild(document.createTextNode(", "));
+    p.appendChild(el("a", { href: "#ders-" + k, text: "Ders " + k + " (" + DERSLER[k - 1].baslik + ")" }));
+  });
+  p.appendChild(document.createTextNode(". Bu dersleri bilmiyorsanız önce onlara göz atın."));
+  return p;
+}
+
+/* ---------- Yol haritaları ---------- */
+var YOLLAR = [
+  { id: "baslangic", baslik: "Sıfırdan başlayan", sure: "",
+    aciklama: "Biraz programlama biliyorsunuz ama düşük seviyeli konulara yeni başlıyorsunuz. Önce C ve bellek, ardından assembly ve Ghidra ile ilk tersine mühendislik adımları.",
+    dersler: [1, 3, 5, 6, 8, 9, 22, 23, 24, 25, 26, 43, 44, 45, 60, 69, 96], ctf: ["rev"] },
+  { id: "ctf", baslik: "CTF'e hazırlanan (pwn + rev)", sure: "",
+    aciklama: "Buffer overflow, format string, heap ve crackme türü soruları çözmek isteyenler için. Savunmaları da bilmek saldırıyı anlamanın parçasıdır.",
+    dersler: [1, 2, 3, 5, 6, 15, 16, 17, 22, 23, 24, 25, 44, 48, 60, 61, 62, 63, 64, 47, 70, 71, 69, 80, 96], ctf: ["bof", "fmt", "heap", "rev"] },
+  { id: "malware", baslik: "Zararlı yazılım analizi", sure: "",
+    aciklama: "Şüpheli bir ikiliyi güvenli ortamda incelemek, davranışını ve imzalarını çıkarmak isteyenler için. Önce laboratuvarı kurun, sonra statik ve dinamik analiz.",
+    dersler: [8, 22, 23, 24, 25, 66, 43, 44, 45, 60, 63, 64, 65, 67, 75, 56, 81, 79, 74, 85], ctf: ["rev"] },
+  { id: "zafiyet", baslik: "Zafiyet araştırması ve fuzzing", sure: "",
+    aciklama: "Bellek hatalarını otomatik araçlarla bulmak ve çökmeleri sınıflandırmak isteyenler için.",
+    dersler: [1, 2, 3, 15, 16, 17, 21, 22, 23, 24, 60, 61, 62, 70, 71, 68, 77, 76, 78, 80], ctf: ["bof", "heap"] },
+  { id: "mobil", baslik: "Mobil ve gömülü sistemler", sure: "",
+    aciklama: "Android uygulamaları, firmware ve donanım arayüzleriyle uğraşanlar için. ARM64 bilgisi önemlidir.",
+    dersler: [8, 22, 23, 24, 30, 43, 44, 45, 60, 79, 82, 83, 84, 94, 95, 85], ctf: [] },
+  { id: "sistem", baslik: "Çekirdek ve sistem programlama", sure: "",
+    aciklama: "İşletim sistemi iç yapısı, çekirdek modülleri, sürücüler ve sanallaştırma ile ilgilenenler için.",
+    dersler: [12, 13, 20, 29, 31, 33, 34, 35, 37, 86, 88, 89, 65, 81, 87], ctf: [] },
+  { id: "derleyici", baslik: "Derleyici ve program analizi araçları", sure: "",
+    aciklama: "Kendi analiz araçlarınızı yazmak, ara dil (IR) ve sembolik yürütme ile çalışmak isteyenler için.",
+    dersler: [8, 39, 48, 52, 53, 90, 91, 92, 76, 80, 85], ctf: [] },
+  { id: "tam", baslik: "Tam kurs (97 ders, sırayla)", sure: "",
+    aciklama: "Hiçbir şeyi atlamadan, kursun tasarlandığı sırada baştan sona gitmek isteyenler için.",
+    dersler: null, ctf: ["bof", "rev", "fmt", "heap"] }
+];
+
+function yolDersleri(y) {
+  if (y.dersler) return y.dersler;
+  var l = []; for (var i = 1; i <= DERSLER.length; i++) l.push(i); return l;
+}
+
+function yolSayfa(id) {
+  app.innerHTML = "";
+  window.scrollTo(0, 0);
+  var y = YOLLAR.filter(function (x) { return x.id === id; })[0];
+  if (!y) {
+    app.appendChild(el("h2", { text: "Yol haritaları" }));
+    app.appendChild(el("p", { text: DERSLER.length + " ders ilk bakışta çok görünebilir. Hedefinize göre seçilmiş kısa bir sıra izleyebilirsiniz. Dersler her zaman yol haritasından bağımsız olarak da açılabilir." }));
+    var ul = el("ul");
+    YOLLAR.forEach(function (x) {
+      var d = yolDersleri(x);
+      ul.appendChild(el("li", null, [
+        el("a", { href: "#yol-" + x.id, text: x.baslik }),
+        " (" + d.length + " ders, yaklaşık " + d.length + " saat): " + x.aciklama
+      ]));
+    });
+    app.appendChild(ul);
+    return;
+  }
+  var d = yolDersleri(y);
+  app.appendChild(el("p", null, [el("a", { href: "#yol", text: "[ Tüm yol haritaları ]" })]));
+  app.appendChild(el("h2", { text: "Yol haritası: " + y.baslik }));
+  app.appendChild(el("p", { text: y.aciklama }));
+  app.appendChild(el("p", { text: d.length + " ders, her biri 60 dakika: yaklaşık " + d.length + " saat." }));
+  var t = el("table", { border: "1", cellpadding: "4", cellspacing: "0", width: "100%" });
+  t.appendChild(el("tr", null, [el("th", { text: "Sıra" }), el("th", { text: "Ders" }), el("th", { text: "Aşama" })]));
+  d.forEach(function (n, i) {
+    var ds = DERSLER[n - 1];
+    t.appendChild(el("tr", null, [
+      el("td", { text: String(i + 1), align: "center" }),
+      el("td", null, [el("a", { href: "#ders-" + n, text: "Ders " + n + ": " + ds.baslik })]),
+      el("td", { text: "Aşama " + ds.asama })
+    ]));
+  });
+  app.appendChild(t);
+  if (y.ctf && y.ctf.length) {
+    app.appendChild(el("h3", { text: "Bu yolda çözebileceğiniz CTF'ler" }));
+    var cu = el("ul");
+    y.ctf.forEach(function (a) {
+      var c = CTFLER.filter(function (x) { return x.ad === a; })[0];
+      if (c) cu.appendChild(el("li", null, [el("a", { href: "#ctf-" + c.ad, text: c.baslik }), " (" + c.ders.split(":")[0] + ")"]));
+    });
+    app.appendChild(cu);
+  }
+  app.appendChild(el("p", null, [el("a", { href: "#ders-" + d[0], text: "Birinci derse başla >>" })]));
+}
+
+/* ---------- Hızlı başvuru ---------- */
+var KOPYA = [
+  { id: "kayit", baslik: "x86-64 kayıtçıları",
+    not: ["32 bitlik bir kayıtçıya yazmak üst 32 biti sıfırlar (mov eax, 1 tüm rax'i 1 yapar). 16 ve 8 bitlik yazmalar üst bitleri korur.", "Roller System V (Linux, macOS) içindir. Windows farkları için aşağıdaki çağrı kuralları tablosuna bakın."],
+    baslikSatiri: ["64 bit", "32 bit", "16 bit", "8 bit", "Rolü"],
+    satirlar: [
+      ["rax", "eax", "ax", "al", "Dönüş değeri; syscall numarası"],
+      ["rbx", "ebx", "bx", "bl", "Genel amaçlı (callee-saved)"],
+      ["rcx", "ecx", "cx", "cl", "4. argüman; kaydırma sayacı (cl); syscall'da bozulur"],
+      ["rdx", "edx", "dx", "dl", "3. argüman; çarpma/bölmede üst yarı"],
+      ["rsi", "esi", "si", "sil", "2. argüman; dizi komutlarında kaynak"],
+      ["rdi", "edi", "di", "dil", "1. argüman; dizi komutlarında hedef"],
+      ["rbp", "ebp", "bp", "bpl", "Frame pointer (callee-saved)"],
+      ["rsp", "esp", "sp", "spl", "Yığın göstergesi (stack pointer)"],
+      ["r8, r9", "r8d, r9d", "r8w, r9w", "r8b, r9b", "5. ve 6. argüman"],
+      ["r10, r11", "r10d, r11d", "r10w, r11w", "r10b, r11b", "Geçici; r10 syscall'da 4. argüman"],
+      ["r12 - r15", "r12d - r15d", "r12w - r15w", "r12b - r15b", "Callee-saved"],
+      ["rip", "-", "-", "-", "Komut göstergesi (bir sonraki komutun adresi)"],
+      ["xmm0 - xmm15", "-", "-", "-", "128 bit SSE kayıtçıları; kayan nokta argüman ve dönüş (xmm0)"]
+    ] },
+  { id: "bayrak", baslik: "RFLAGS bayrakları ve koşullu atlamalar",
+    not: ["cmp a, b komutu a - b hesaplar ve yalnızca bayrakları ayarlar. Ardından gelen jcc buna bakar. İşaretli karşılaştırmada g/l (greater/less), işaretsizde a/b (above/below) kullanılır."],
+    baslikSatiri: ["Bayrak", "Adı", "1 olduğunda"],
+    satirlar: [
+      ["ZF", "Zero", "Sonuç sıfır (cmp'de iki değer eşit)"],
+      ["SF", "Sign", "Sonucun en anlamlı biti 1 (işaretli olarak negatif)"],
+      ["CF", "Carry", "İşaretsiz taşma veya ödünç alma (cmp'de a < b, işaretsiz)"],
+      ["OF", "Overflow", "İşaretli taşma"],
+      ["PF", "Parity", "Sonucun en düşük baytında 1 bit sayısı çift"],
+      ["DF", "Direction", "Dizi komutları (movs, stos) geriye doğru çalışır"],
+      ["IF", "Interrupt", "Kesmeler açık (kullanıcı kipinde değiştirilemez)"],
+      ["TF", "Trap", "Tek adım kipi (debugger kullanır)"]
+    ],
+    ek: {
+      baslikSatiri: ["Komut", "Koşul", "cmp a, b sonrası anlamı"],
+      satirlar: [
+        ["je / jz", "ZF=1", "a == b"],
+        ["jne / jnz", "ZF=0", "a != b"],
+        ["jg / jnle", "ZF=0 ve SF=OF", "a > b (işaretli)"],
+        ["jge / jnl", "SF=OF", "a >= b (işaretli)"],
+        ["jl / jnge", "SF≠OF", "a < b (işaretli)"],
+        ["jle / jng", "ZF=1 veya SF≠OF", "a <= b (işaretli)"],
+        ["ja / jnbe", "CF=0 ve ZF=0", "a > b (işaretsiz)"],
+        ["jae / jnb / jnc", "CF=0", "a >= b (işaretsiz)"],
+        ["jb / jnae / jc", "CF=1", "a < b (işaretsiz)"],
+        ["jbe / jna", "CF=1 veya ZF=1", "a <= b (işaretsiz)"],
+        ["js / jns", "SF=1 / SF=0", "Sonuç negatif / pozitif"],
+        ["jo / jno", "OF=1 / OF=0", "İşaretli taşma var / yok"]
+      ]
+    } },
+  { id: "cagri", baslik: "Çağrı kuralları: System V ve Windows x64",
+    not: ["Kural, Ghidra'da fonksiyon imzasını doğru kurmanın temelidir: argümanların hangi kayıtçıda geldiğini bilirseniz decompiler çıktısını düzeltebilirsiniz."],
+    baslikSatiri: ["Özellik", "System V AMD64 (Linux, macOS)", "Microsoft x64 (Windows)"],
+    satirlar: [
+      ["Tam sayı / pointer argümanlar", "rdi, rsi, rdx, rcx, r8, r9", "rcx, rdx, r8, r9"],
+      ["Kayan nokta argümanlar", "xmm0 - xmm7", "xmm0 - xmm3 (argümanın sırası hangi kayıtçı olduğunu belirler)"],
+      ["Kalan argümanlar", "Yığında, sağdan sola push", "Yığında; ayrıca çağıran her zaman 32 bayt shadow space ayırır"],
+      ["Dönüş değeri", "rax (128 bit için rdx:rax), xmm0", "rax, xmm0"],
+      ["Callee-saved (korunur)", "rbx, rbp, r12 - r15", "rbx, rbp, rdi, rsi, rsp, r12 - r15, xmm6 - xmm15"],
+      ["Caller-saved (bozulabilir)", "rax, rcx, rdx, rsi, rdi, r8 - r11", "rax, rcx, rdx, r8 - r11, xmm0 - xmm5"],
+      ["Red zone", "Var: rsp'nin altındaki 128 bayt", "Yok"],
+      ["Yığın hizası", "call öncesi rsp 16 bayta hizalı", "Aynı"],
+      ["Değişken argümanlı fonksiyon", "al = kullanılan xmm sayısı", "Kayan nokta argümanlar ek olarak tam sayı kayıtçılarına da kopyalanır"]
+    ] },
+  { id: "syscall", baslik: "Linux x86-64 sistem çağrıları",
+    not: ["Kural: numara rax'e, argümanlar sırasıyla rdi, rsi, rdx, r10, r8, r9'a yazılır ve syscall komutu çalıştırılır. Dönüş değeri rax'tedir; negatif değer -errno demektir. syscall rcx ve r11'i bozar.",
+          "Dikkat: 4. argüman burada r10'dur (normal çağrı kuralındaki rcx değil).",
+          "32 bit x86 Linux'ta int 0x80 kullanılır; numara eax'e, argümanlar ebx, ecx, edx, esi, edi, ebp'ye yazılır ve numaralar farklıdır."],
+    baslikSatiri: ["No", "Ad", "Argümanlar"],
+    satirlar: [
+      ["0", "read", "fd, buf, count"], ["1", "write", "fd, buf, count"], ["2", "open", "path, flags, mode"], ["3", "close", "fd"],
+      ["5", "fstat", "fd, statbuf"], ["8", "lseek", "fd, offset, whence"], ["9", "mmap", "addr, len, prot, flags, fd, off"],
+      ["10", "mprotect", "addr, len, prot"], ["11", "munmap", "addr, len"], ["12", "brk", "addr"], ["21", "access", "path, mode"],
+      ["32", "dup", "oldfd"], ["33", "dup2", "oldfd, newfd"], ["39", "getpid", "-"], ["41", "socket", "domain, type, protocol"],
+      ["42", "connect", "fd, addr, addrlen"], ["43", "accept", "fd, addr, addrlen"], ["49", "bind", "fd, addr, addrlen"], ["50", "listen", "fd, backlog"],
+      ["56", "clone", "flags, stack, ptid, ctid, tls"], ["57", "fork", "-"], ["59", "execve", "path, argv, envp"], ["60", "exit", "code"],
+      ["62", "kill", "pid, sig"], ["101", "ptrace", "request, pid, addr, data"], ["158", "arch_prctl", "code, addr"],
+      ["231", "exit_group", "code"], ["257", "openat", "dirfd, path, flags, mode"], ["318", "getrandom", "buf, len, flags"]
+    ] },
+  { id: "kalip", baslik: "Sık görülen komut kalıpları",
+    not: ["Disassembly okurken bu kalıpları tanımak hızlanmanızı sağlar."],
+    baslikSatiri: ["Kalıp", "Anlamı"],
+    satirlar: [
+      ["xor eax, eax", "eax (ve rax) = 0. mov eax, 0'dan kısa olduğu için derleyiciler bunu tercih eder"],
+      ["test eax, eax  +  jz/jnz", "eax sıfır mı? (genelde 'if (x == 0)' ya da 'if (x)')"],
+      ["lea eax, [rdi+rdi*2]", "Adres değil, hesap: eax = 3 * rdi. lea ile küçük sabitle çarpma yapılır"],
+      ["sar / shr + kaydırma kalıbı", "2'nin kuvvetiyle bölme. İşaretli bölmede düzeltme için ek komutlar eklenir"],
+      ["push rbp; mov rbp, rsp; sub rsp, N", "Klasik fonksiyon girişi (prologue)"],
+      ["leave; ret  ya da  pop rbp; ret", "Fonksiyon çıkışı (epilogue)"],
+      ["endbr64", "CET/IBT işaretçisi: dolaylı atlamanın geçerli hedefi. Fonksiyon başlangıcı ipucu"],
+      ["mov rax, fs:0x28 ... cmp ... __stack_chk_fail", "Stack canary kontrolü"],
+      ["call [rip+X]  ya da  call func@plt", "Kütüphane fonksiyonu çağrısı (GOT/PLT üzerinden)"],
+      ["rep stosb / rep movsb", "memset / memcpy benzeri: rcx kez tekrar"],
+      ["cdqe / movsxd rax, eax", "32 bitlik işaretli değeri 64 bite işaretle genişletme"],
+      ["nop dword ptr [rax+rax]  / xchg ax, ax", "Hizalama dolgusu; analizde yok sayın"],
+      ["cmp al, 0x20; jbe ...", "Karakter sınıf kontrolü (boşluk veya kontrol karakteri mi?)"]
+    ] },
+  { id: "gdb", baslik: "GDB komutları",
+    not: ["Intel sözdizimi için: set disassembly-flavor intel. pwndbg, GEF gibi eklentiler vmmap, heap, checksec gibi ek komutlar getirir; bunlar standart GDB'de yoktur."],
+    baslikSatiri: ["Komut", "Ne yapar"],
+    satirlar: [
+      ["gdb ./program", "Programı hata ayıklayıcıda açar"],
+      ["break main  (b main)", "main'e kesme noktası koyar; b *0x401136 adrese koyar"],
+      ["tbreak, delete N, info breakpoints", "Geçici kesme noktası; silme; listeleme"],
+      ["run (r), start", "Çalıştır; start main'de durur"],
+      ["continue (c)", "Sonraki kesme noktasına kadar devam et"],
+      ["stepi (si), nexti (ni)", "Bir makine komutu ilerle (nexti call'ın içine girmez)"],
+      ["step (s), next (n), finish", "Kaynak satırı düzeyinde ilerleme; finish fonksiyondan çıkar"],
+      ["info registers (i r), p $rax, p/x $rsp", "Kayıtçıları göster"],
+      ["set $rax = 0", "Kayıtçı değerini değiştir"],
+      ["x/8gx $rsp", "rsp'den 8 adet 8 baytlık değeri onaltılık göster"],
+      ["x/s 0x402010", "Adresteki C string'i göster"],
+      ["x/10i $rip", "rip'ten 10 komutu disassemble et"],
+      ["disassemble main", "Fonksiyonu disassemble et"],
+      ["display/i $pc", "Her durmada geçerli komutu otomatik göster"],
+      ["bt", "Çağrı yığınını (backtrace) göster"],
+      ["info proc mappings", "Bellek haritasını göster"],
+      ["watch *0x404040", "Adrese yazıldığında dur (hardware watchpoint)"],
+      ["layout asm / layout regs", "Metin arayüzünde disassembly ve kayıtçılar (TUI)"],
+      ["ptype struct x, p sizeof(int)", "Tip bilgisi (hata ayıklama sembolleri varsa)"]
+    ] },
+  { id: "ghidra", baslik: "Ghidra kısayolları",
+    not: ["Kısayollar sürüme ve ayarlara göre değişebilir. Emin değilseniz menüden (sağ tık) komutu bulun, kısayolu yanında yazar."],
+    baslikSatiri: ["Kısayol", "Ne yapar"],
+    satirlar: [
+      ["G", "Adrese veya isme git"],
+      ["L", "Etiket / değişken / fonksiyon yeniden adlandır"],
+      ["; (noktalı virgül)", "Satır sonu yorumu ekle"],
+      ["T", "Veri tipini ayarla"],
+      ["Ctrl+L", "Decompiler'da değişkenin tipini değiştir"],
+      ["D", "Disassemble et (seçili baytları kod olarak yorumla)"],
+      ["C", "Kodu temizle (veriye çevir)"],
+      ["F", "Fonksiyon oluştur (Listing'de) veya imzayı düzenle (Decompiler'da)"],
+      ["P", "Pointer tipi uygula"],
+      ["' (tek tırnak)", "String oluştur"],
+      ["[", "Dizi oluştur"],
+      ["Ctrl+Shift+F", "Seçili adrese yapılan referansları göster (XREF)"],
+      ["Alt+Sol / Alt+Sağ", "Gezinme geçmişinde geri / ileri"],
+      ["Ctrl+Z", "Geri al"]
+    ] },
+  { id: "arac", baslik: "Komut satırı araçları",
+    not: ["Ghidra açmadan önce bu araçlarla bir ikilinin ilk portresi çıkarılabilir."],
+    baslikSatiri: ["Komut", "Ne yapar"],
+    satirlar: [
+      ["file ./a.out", "Dosya türü, mimari, statik/dinamik bağlama, strip edilmiş mi"],
+      ["strings -n 6 ./a.out", "Okunabilir metinler (6 karakter ve üstü)"],
+      ["readelf -h ./a.out", "ELF başlığı (giriş noktası, mimari)"],
+      ["readelf -S / -l / -s / -d", "Bölümler / segmentler / semboller / dinamik girişler"],
+      ["nm ./a.out", "Sembol listesi (strip edilmemişse)"],
+      ["objdump -d -M intel ./a.out", "Intel sözdizimiyle disassembly"],
+      ["objdump -s -j .rodata ./a.out", "Bir bölümün ham içeriği"],
+      ["ldd ./a.out", "Bağlı paylaşımlı kütüphaneler"],
+      ["strace ./a.out", "Çalışırken yapılan sistem çağrıları"],
+      ["ltrace ./a.out", "Çalışırken yapılan kütüphane çağrıları"],
+      ["checksec --file=./a.out", "NX, PIE, canary, RELRO durumu (pwntools / checksec.sh)"],
+      ["gcc -g -O0 -fno-stack-protector -no-pie x.c", "Deney için korumaları kapatarak derleme (yalnızca kendi laboratuvarınızda)"],
+      ["gcc -fsanitize=address,undefined -g x.c", "ASan ve UBSan ile derleme"],
+      ["xxd ./a.out | head", "Onaltılık döküm"]
+    ] }
+];
+
+function tabloOlustur(baslikSatiri, satirlar) {
+  var t = el("table", { border: "1", cellpadding: "4", cellspacing: "0", width: "100%" });
+  t.appendChild(el("tr", null, baslikSatiri.map(function (h) { return el("th", { text: h }); })));
+  satirlar.forEach(function (r) {
+    t.appendChild(el("tr", null, r.map(function (c, i) { return el("td", null, [i === 0 ? el("code", { text: c }) : c]); })));
+  });
+  return t;
+}
+
+function kopyaSayfa(bolum) {
+  app.innerHTML = "";
+  window.scrollTo(0, 0);
+  app.appendChild(el("h2", { text: "Hızlı başvuru" }));
+  app.appendChild(el("p", { text: "Derslerde sık ihtiyaç duyulan tablolar bir arada. Bölüme gitmek için:" }));
+  var ul = el("ul");
+  KOPYA.forEach(function (k) { ul.appendChild(el("li", null, [el("a", { href: "#kopya-" + k.id, text: k.baslik })])); });
+  app.appendChild(ul);
+  var hedef = null;
+  KOPYA.forEach(function (k) {
+    app.appendChild(el("hr"));
+    var h = el("h3", { id: "kopya-" + k.id, text: k.baslik });
+    if (k.id === bolum) hedef = h;
+    app.appendChild(h);
+    (k.not || []).forEach(function (n) { app.appendChild(el("p", null, [el("small", { text: n })])); });
+    app.appendChild(tabloOlustur(k.baslikSatiri, k.satirlar));
+    if (k.ek) {
+      app.appendChild(el("p"));
+      app.appendChild(tabloOlustur(k.ek.baslikSatiri, k.ek.satirlar));
+    }
+  });
+  if (hedef) setTimeout(function () { hedef.scrollIntoView(); }, 0);
+}
+
+/* ---------- Arama ---------- */
+function katla(s) {
+  return String(s).toLocaleLowerCase("tr")
+    .replace(/ı/g, "i").replace(/ş/g, "s").replace(/ğ/g, "g").replace(/ü/g, "u").replace(/ö/g, "o").replace(/ç/g, "c")
+    .replace(/â/g, "a").replace(/î/g, "i").replace(/û/g, "u");
+}
+
+var ARAMA = null;
+function aramaHazirla() {
+  if (ARAMA) return ARAMA;
+  ARAMA = { dersler: [], sozluk: [], ctf: [], kopya: [], yol: [] };
+  DERSLER.forEach(function (d, i) {
+    var parcalar = [d.amac].concat(d.anlat || [], d.ek || [], [d.ozet || ""], (d.uygulama || []),
+      (d.sorular || []).map(function (s) { return s.q + " " + s.a; }), [d.kod || "", d.ekKod || ""]);
+    ARAMA.dersler.push({ n: i + 1, d: d, baslikK: katla(d.baslik), parcalar: parcalar, parcalarK: parcalar.map(katla) });
+  });
+  SOZLUK.forEach(function (r) { ARAMA.sozluk.push({ r: r, k: katla(r[0] + " " + r[1]), baslikK: katla(r[0]) }); });
+  CTFLER.forEach(function (c) { ARAMA.ctf.push({ c: c, k: katla(c.baslik + " " + c.aciklama + " " + c.ders), baslikK: katla(c.baslik) }); });
+  KOPYA.forEach(function (k) {
+    var tum = [k.baslik].concat(k.not || []);
+    k.satirlar.forEach(function (r) { tum.push(r.join(" ")); });
+    if (k.ek) k.ek.satirlar.forEach(function (r) { tum.push(r.join(" ")); });
+    ARAMA.kopya.push({ k: k, kk: katla(tum.join(" ")), baslikK: katla(k.baslik) });
+  });
+  YOLLAR.forEach(function (y) { ARAMA.yol.push({ y: y, k: katla(y.baslik + " " + y.aciklama) }); });
+  return ARAMA;
+}
+
+function say(metin, kelime) {
+  var n = 0, i = 0;
+  while ((i = metin.indexOf(kelime, i)) !== -1) { n++; i += kelime.length; }
+  return n;
+}
+
+function parcaOzet(orijinal, katli, kelimeler) {
+  var yer = -1;
+  for (var i = 0; i < kelimeler.length; i++) { var p = katli.indexOf(kelimeler[i]); if (p !== -1 && (yer === -1 || p < yer)) yer = p; }
+  if (yer === -1) return null;
+  if (orijinal.length !== katli.length) return katli.slice(Math.max(0, yer - 60), yer + 140);
+  var bas = Math.max(0, yer - 60), son = Math.min(orijinal.length, yer + 140);
+  return (bas > 0 ? "… " : "") + orijinal.slice(bas, son).replace(/\s+/g, " ") + (son < orijinal.length ? " …" : "");
+}
+
+function vurgula(metin, kelimeler) {
+  var k = katla(metin), frag = [], i = 0;
+  if (k.length !== metin.length) return [metin];
+  var araliklar = [];
+  kelimeler.forEach(function (w) {
+    var p = 0; while ((p = k.indexOf(w, p)) !== -1) { araliklar.push([p, p + w.length]); p += w.length; }
+  });
+  araliklar.sort(function (a, b) { return a[0] - b[0]; });
+  araliklar.forEach(function (a) {
+    if (a[0] < i) return;
+    if (a[0] > i) frag.push(metin.slice(i, a[0]));
+    frag.push(el("mark", { text: metin.slice(a[0], a[1]) }));
+    i = a[1];
+  });
+  if (i < metin.length) frag.push(metin.slice(i));
+  return frag;
+}
+
+function araSonuc(q) {
+  var A = aramaHazirla();
+  var kelimeler = katla(q).split(/\s+/).filter(function (x) { return x.length > 0; });
+  var s = { dersler: [], sozluk: [], ctf: [], kopya: [], yol: [] };
+  if (!kelimeler.length) return { s: s, kelimeler: kelimeler };
+
+  A.dersler.forEach(function (x) {
+    var puan = 0, hepsi = true, ozet = null;
+    var tumu = x.baslikK + "\n" + x.parcalarK.join("\n");
+    kelimeler.forEach(function (w) {
+      if (tumu.indexOf(w) === -1) { hepsi = false; return; }
+      if (x.baslikK.indexOf(w) !== -1) puan += 20;
+      puan += Math.min(10, say(tumu, w));
+    });
+    if (!hepsi) return;
+    for (var i = 0; i < x.parcalar.length; i++) {
+      var sj = parcaOzet(x.parcalar[i], x.parcalarK[i], kelimeler);
+      if (sj) { ozet = sj; break; }
+    }
+    s.dersler.push({ x: x, puan: puan, ozet: ozet });
+  });
+  s.dersler.sort(function (a, b) { return b.puan - a.puan || a.x.n - b.x.n; });
+
+  A.sozluk.forEach(function (x) {
+    var ok = kelimeler.every(function (w) { return x.k.indexOf(w) !== -1; });
+    if (ok) s.sozluk.push(x);
+  });
+  A.ctf.forEach(function (x) { if (kelimeler.every(function (w) { return x.k.indexOf(w) !== -1; })) s.ctf.push(x); });
+  A.kopya.forEach(function (x) { if (kelimeler.every(function (w) { return x.kk.indexOf(w) !== -1; })) s.kopya.push(x); });
+  A.yol.forEach(function (x) { if (kelimeler.every(function (w) { return x.k.indexOf(w) !== -1; })) s.yol.push(x); });
+  return { s: s, kelimeler: kelimeler };
+}
+
+function aramaSayfa(q) {
+  app.innerHTML = "";
+  window.scrollTo(0, 0);
+  app.appendChild(el("h2", { text: "Arama" }));
+  if (!q || !q.trim()) {
+    app.appendChild(el("p", { text: "Üstteki kutuya bir terim yazın (örnek: tcache, canary, vtable, GOT). Başlıklarda, ders metinlerinde, kodlarda, sorularda, sözlükte, CTF'lerde ve hızlı başvuruda arar. Türkçe karakterleri yazmak zorunda değilsiniz (kayitci de kayıtçı'yı bulur). Birden çok kelime yazarsanız hepsini içeren sonuçlar gelir." }));
+    return;
+  }
+  var r = araSonuc(q), s = r.s, kw = r.kelimeler;
+  var toplam = s.dersler.length + s.sozluk.length + s.ctf.length + s.kopya.length + s.yol.length;
+  app.appendChild(el("p", null, ["\"", el("b", { text: q.trim() }), "\" için " + toplam + " sonuç bulundu."]));
+  if (!toplam) { app.appendChild(el("p", { text: "Sonuç yok. Daha kısa veya farklı bir terim deneyin." })); return; }
+
+  if (s.dersler.length) {
+    app.appendChild(el("h3", { text: "Dersler (" + s.dersler.length + ")" }));
+    var ol = el("ul");
+    s.dersler.slice(0, 40).forEach(function (h) {
+      var li = el("li", null, [el("a", { href: "#ders-" + h.x.n }, vurgula("Ders " + h.x.n + ": " + h.x.d.baslik, kw))]);
+      if (h.ozet) li.appendChild(el("div", null, [el("small", null, vurgula(h.ozet, kw))]));
+      ol.appendChild(li);
+    });
+    app.appendChild(ol);
+    if (s.dersler.length > 40) app.appendChild(el("p", { text: "İlk 40 sonuç gösteriliyor. Aramayı daraltmak için daha fazla kelime ekleyin." }));
+  }
+  if (s.sozluk.length) {
+    app.appendChild(el("h3", { text: "Sözlük (" + s.sozluk.length + ")" }));
+    var ul2 = el("ul");
+    s.sozluk.forEach(function (x) {
+      ul2.appendChild(el("li", null, [el("b", null, vurgula(x.r[0], kw)), ": "].concat(vurgula(x.r[1], kw))));
+    });
+    app.appendChild(ul2);
+  }
+  if (s.kopya.length) {
+    app.appendChild(el("h3", { text: "Hızlı başvuru (" + s.kopya.length + ")" }));
+    var ul3 = el("ul");
+    s.kopya.forEach(function (x) { ul3.appendChild(el("li", null, [el("a", { href: "#kopya-" + x.k.id, text: x.k.baslik })])); });
+    app.appendChild(ul3);
+  }
+  if (s.ctf.length) {
+    app.appendChild(el("h3", { text: "CTF (" + s.ctf.length + ")" }));
+    var ul4 = el("ul");
+    s.ctf.forEach(function (x) { ul4.appendChild(el("li", null, [el("a", { href: "#ctf-" + x.c.ad, text: x.c.baslik })])); });
+    app.appendChild(ul4);
+  }
+  if (s.yol.length) {
+    app.appendChild(el("h3", { text: "Yol haritaları (" + s.yol.length + ")" }));
+    var ul5 = el("ul");
+    s.yol.forEach(function (x) { ul5.appendChild(el("li", null, [el("a", { href: "#yol-" + x.y.id, text: x.y.baslik })])); });
+    app.appendChild(ul5);
+  }
+}
+
+/* ---------- Üst menü ve yönlendirme ---------- */
+function menuCubugu(q) {
+  var p = el("p", { id: "menu" });
+  [["#ana-sayfa", "Ana sayfa"], ["#yol", "Yol haritaları"], ["#kopya", "Hızlı başvuru"], ["#lab", "Canlı lab"], ["#sozluk", "Sözlük"], ["#ctf", "CTF"]]
+    .forEach(function (l, i) {
+      if (i) p.appendChild(document.createTextNode(" | "));
+      p.appendChild(el("a", { href: l[0], text: l[1] }));
+    });
+  var f = el("form", { style: "display:inline;margin-left:1em", role: "search" });
+  var inp = el("input", { type: "text", placeholder: "Ders, terim veya kod ara", size: "22", "aria-label": "Ara" });
+  inp.value = q || "";
+  var btn = el("button", { type: "submit", text: "Ara" });
+  f.appendChild(inp); f.appendChild(document.createTextNode(" ")); f.appendChild(btn);
+  f.onsubmit = function (e) {
+    e.preventDefault();
+    var v = inp.value.trim();
+    var h = v ? "#ara-" + encodeURIComponent(v) : "#ara";
+    if (location.hash === h) yonlendir(); else location.hash = h;
+  };
+  p.appendChild(f);
+  return p;
+}
+
 function yonlendir() {
   TTS.stop(true);
-  if (location.hash === "#sozluk") { sozlukSayfa(); return; }
-  if (location.hash === "#ctf") { ctfSayfa(null); return; }
-  var m = /^#ctf-(.+)$/.exec(location.hash);
-  if (m) { ctfSayfa(m[1]); return; }
-  var d = /^#ders-(\d+)$/.exec(location.hash);
-  var n = d ? parseInt(d[1], 10) : 0;
-  if (n >= 1 && n <= DERSLER.length) dersSayfa(n); else { anaSayfa(); window.scrollTo(0, 0); }
+  var h = location.hash, q = "", m;
+  if (m = /^#ara(?:-(.*))?$/.exec(h)) { try { q = decodeURIComponent(m[1] || ""); } catch (e) { q = m[1] || ""; } }
+
+  if (h === "#sozluk") sozlukSayfa();
+  else if (h === "#ctf") ctfSayfa(null);
+  else if (h === "#lab") {
+    app.innerHTML = ""; window.scrollTo(0, 0);
+    if (window.LAB) window.LAB.sayfa(app, el);
+    else app.appendChild(el("p", { text: "Bu tarayıcı, canlı laboratuvarın gerektirdiği özellikleri (BigInt) desteklemiyor. Güncel bir tarayıcı deneyin." }));
+  }
+  else if (/^#ara(-|$)/.test(h)) aramaSayfa(q);
+  else if (h === "#yol") yolSayfa(null);
+  else if (m = /^#yol-(.+)$/.exec(h)) yolSayfa(m[1]);
+  else if (h === "#kopya") kopyaSayfa(null);
+  else if (m = /^#kopya-(.+)$/.exec(h)) kopyaSayfa(m[1]);
+  else if (m = /^#ctf-(.+)$/.exec(h)) ctfSayfa(m[1]);
+  else {
+    var d = /^#ders-(\d+)$/.exec(h);
+    var n = d ? parseInt(d[1], 10) : 0;
+    if (n >= 1 && n <= DERSLER.length) dersSayfa(n); else { anaSayfa(); window.scrollTo(0, 0); }
+  }
+  app.insertBefore(menuCubugu(q), app.firstChild);
+  if (m = /^#kopya-(.+)$/.exec(h)) {
+    var hedef = document.getElementById("kopya-" + m[1]);
+    if (hedef) hedef.scrollIntoView();
+  }
 }
 window.addEventListener("hashchange", yonlendir);
 yonlendir();
